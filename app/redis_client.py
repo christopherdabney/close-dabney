@@ -1,6 +1,9 @@
 import redis
 import os
 
+NAMESPACE = "url_count"
+NAMESPACE_TEST = "test"
+
 class RedisClient:
     def __init__(self):
         # Use environment variable for Redis host (Docker vs local)
@@ -13,21 +16,31 @@ class RedisClient:
             decode_responses=True
         )
     
-    def increment_url_count(self, url_path):
+    def increment_url_count(self, url_path, namespace=NAMESPACE):
         """
-        Increment the request count for a given URL path.
-        Uses Redis INCR which atomically increments the counter.
+        Increment request count for a URL path with specified namespace.
+        Default namespace is 'url_count' for real traffic.
         """
-        key = f"url_count:{url_path}"
+        key = f"{namespace}:{url_path}"
         return self.client.incr(key)
     
-    def get_url_stats(self):
+    def clear_namespace(self, namespace=NAMESPACE):
+        """
+        Delete all keys in the specified namespace.
+        """
+        keys = self.client.keys(f"{namespace}:*")
+        if keys:
+            self.client.delete(*keys)
+        return len(keys)  # Return count of deleted keys
+
+    def get_url_stats(self, namespace=NAMESPACE):
+
         """
         Get all URL request statistics ordered from most to least requested.
         Returns list of dictionaries with 'url' and 'count' keys.
         """
         # Get all keys matching our pattern
-        keys = self.client.keys("url_count:*")
+        keys = self.client.keys(f"{namespace}:*")
         
         stats = []
         for key in keys:
