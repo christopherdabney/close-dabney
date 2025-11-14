@@ -1,6 +1,4 @@
 import redis
-import json
-import uuid
 import os
 
 class RedisClient:
@@ -15,25 +13,28 @@ class RedisClient:
             decode_responses=True
         )
     
-    def create_user(self, user_data):
-        user_id = str(uuid.uuid4())
-        user_data['id'] = user_id
-        
-        # Store user as JSON string in Redis
-        self.client.set(f"user:{user_id}", json.dumps(user_data))
-        
-        # Add to users list for easy retrieval
-        self.client.sadd("users", user_id)
-        
-        return user_id
+    def increment_url_count(self, url_path):
+        """
+        Increment the request count for a given URL path.
+        Uses Redis INCR which atomically increments the counter.
+        """
+        key = f"url_count:{url_path}"
+        return self.client.incr(key)
     
-    def get_all_users(self):
-        user_ids = self.client.smembers("users")
-        users = []
+    def get_url_stats(self):
+        """
+        Get all URL request statistics ordered from most to least requested.
+        Returns list of dictionaries with 'url' and 'count' keys.
+        """
+        # Get all keys matching our pattern
+        keys = self.client.keys("url_count:*")
         
-        for user_id in user_ids:
-            user_data = self.client.get(f"user:{user_id}")
-            if user_data:
-                users.append(json.loads(user_data))
+        stats = []
+        for key in keys:
+            # Extract URL path from key (remove "url_count:" prefix)
+            url_path = key[10:]  # len("url_count:") = 10
+            count = int(self.client.get(key))
+            stats.append({"url": url_path, "count": count})
         
-        return users
+        # Sort by count (highest first)
+        return sorted(stats, key=lambda x: x['count'], reverse=True)
