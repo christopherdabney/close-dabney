@@ -29,9 +29,35 @@ The application follows a microservices architecture with clear separation of co
 - **Test Generator**: Synthetic traffic creation following specification constraints
 
 **Data Model:**
-- Redis keys: `url_count:/api/path/segment/`
+- Redis keys: `url_count:/api/path/segment/` for real traffic, `test:/api/path/segment/` for test traffic
 - Atomic increments ensure thread-safe counting
 - Statistics sorted by frequency for performance monitoring
+
+## DESIGN DECISIONS
+
+**Redis Namespacing & Test Isolation:**
+- Test requests use `test:*` namespace vs `url_count:*` for real traffic
+- Each test run clears previous test data for clean, isolated results
+- Stats endpoint returns only test namespace data (test and stats are intentionally coupled)
+
+**Input Validation:**
+- No upper bound on test request count (removed due to spec ambiguity about "millions" of requests)
+- Only validates positive integers (> 0)
+
+**URI Segment Construction:**
+- Character set: `a-z`, `A-Z`, `0-9`, and hyphens for realistic API patterns
+- Segment length: 3-12 characters (randomly chosen per test run, consistent within test)
+- 1-6 path segments per URL, each segment chosen from pool of 3 random strings
+
+**URL Normalization:**
+- All URLs normalized to include trailing slashes for consistent counting
+- `/api/user` and `/api/user/` count as the same endpoint
+
+**Request Source Identification:**
+- Uses `X-Request-Source` header to distinguish test vs real traffic
+- Works across different servers/machines (no thread-local storage)
+
+These decisions resolve ambiguities in the specification and ensure consistent, realistic behavior for the request tracking system.
 
 ## DEPENDENCIES
 
@@ -40,6 +66,7 @@ The application follows a microservices architecture with clear separation of co
 - Flask 2.3.3
 - Redis 5.0.1
 - python-dotenv 1.0.0
+- requests 2.31.0
 
 **Infrastructure:**
 - Docker & Docker Compose
