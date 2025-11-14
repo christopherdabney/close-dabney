@@ -18,6 +18,7 @@ def api_endpoints(path):
     """
     # Construct the full URL path
     url_path = f"/api/{path}" if path else "/api/"
+    
     # Normalize: ensure trailing slash for consistent counting
     if not url_path.endswith('/'):
         url_path += '/'

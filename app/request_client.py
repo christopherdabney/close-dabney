@@ -1,26 +1,34 @@
 import asyncio
 import aiohttp
-import requests
 import random
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from .paths import generate_segment, generate_random_url_path
 from .redis_client import NAMESPACE_TEST
+from .circuit_breaker import CircuitBreaker
 
 # Retry configuration constants
 MAX_RETRY_ATTEMPTS = 3  # 1 initial + 2 retries
 REQUEST_TIMEOUT_SECONDS = 10  # Per-request timeout
 BACKOFF_BASE_SECONDS = 1  # Base backoff time: 1, 2, 4 seconds
 
+# Circuit breaker configuration
+FAILURE_RATE_THRESHOLD = 0.20  # 20% failure rate threshold
+BATCH_SIZE_FOR_MONITORING = 20  # Check failure rate every N requests
+
 LOCAL_HOST_URL = "http://localhost:5000"
+
 
 async def make_concurrent_requests(num_requests):
     """
-    Make concurrent HTTP requests to /api/* endpoints.
+    Make concurrent HTTP requests to /api/* endpoints with circuit breaker protection.
     Returns test results with success/failure statistics.
     Creates random URLs with 1-6 path segments using 3 random strings.
     """
-    successful_requests = 0
-    failed_requests = 0
+    # Initialize circuit breaker
+    circuit_breaker = CircuitBreaker(
+        failure_threshold=FAILURE_RATE_THRESHOLD,
+        min_sample_size=BATCH_SIZE_FOR_MONITORING
+    )
     
     # Generate 3 random strings for this test run
     random_strings = [
@@ -28,35 +36,51 @@ async def make_concurrent_requests(num_requests):
         for _ in range(3)
     ]
 
-    # Make concurrent HTTP requests
+    # Execute requests with circuit breaker monitoring
     async with aiohttp.ClientSession() as session:
         tasks = []
+        
+        # Create all tasks upfront
         for _ in range(num_requests):
             url_path = generate_random_url_path(random_strings)
             task = make_single_request(session, url_path)
             tasks.append(task)
 
-        # Execute all requests concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Process results
-        for result in results:
-            if isinstance(result, Exception):
-                failed_requests += 1
-                print(f"Request failed: {result}")
-            elif result is True:  # Success
-                successful_requests += 1
-            else:  # HTTP error
-                failed_requests += 1
-                print(f"Request failed: HTTP error")
+        # Process tasks in batches with circuit breaker monitoring
+        for i in range(0, len(tasks), BATCH_SIZE_FOR_MONITORING):
+            batch_end = min(i + BATCH_SIZE_FOR_MONITORING, len(tasks))
+            batch_tasks = tasks[i:batch_end]
+            
+            # Execute current batch
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            
+            # Record results in circuit breaker
+            for result in batch_results:
+                if isinstance(result, Exception):
+                    circuit_breaker.record_failure(str(result))
+                elif result is True:
+                    circuit_breaker.record_success()
+                else:  # HTTP error
+                    circuit_breaker.record_failure("HTTP error")
+            
+            # Check if circuit breaker should trip
+            if circuit_breaker.should_trip():
+                # Cancel remaining tasks
+                remaining_tasks = tasks[batch_end:]
+                for task in remaining_tasks:
+                    if not task.done():
+                        task.cancel()
+                break
     
-    return {
-        "message": f"Generated {num_requests} fake requests",
-        "successful_requests": successful_requests,
-        "failed_requests": failed_requests,
-        "completion_rate": successful_requests / num_requests if num_requests > 0 else 0,
-        "random_strings_used": random_strings,
-    }
+    # Calculate cancelled requests
+    total_cancelled = num_requests - circuit_breaker.total_requests
+    
+    return circuit_breaker.get_stats(
+        total_requested=num_requests,
+        total_cancelled=total_cancelled,
+        random_strings=random_strings
+    )
+
 
 @retry(
     stop=stop_after_attempt(MAX_RETRY_ATTEMPTS),
