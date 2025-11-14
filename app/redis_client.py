@@ -45,7 +45,7 @@ class RedisClient:
         stats = []
         for key in keys:
             # Extract URL path from key (remove "url_count:" prefix)
-            url_path = key[10:]  # len("url_count:") = 10
+            url_path = key[len(namespace) + 1:]  # +1 for the colon
             count = int(self.client.get(key))
             stats.append({"url": url_path, "count": count})
         
