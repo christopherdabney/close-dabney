@@ -4,7 +4,7 @@ from datetime import datetime
 from flask import Flask, jsonify, request
 
 from .request_client import make_concurrent_requests
-from .redis_client import RedisClient, NAMESPACE, NAMESPACE_TEST
+from .redis_client import RedisClient, RedisOperationError, NAMESPACE, NAMESPACE_TEST
 
 app = Flask(__name__)
 redis_client = RedisClient()
@@ -14,19 +14,28 @@ redis_client = RedisClient()
 def api_endpoints(path):
     """
     Handle all GET requests to /api/* paths.
-    This simulates real API endpoints.
+    This simulates real API endpoints with resilient Redis counting.
     """
     # Construct the full URL path
     url_path = f"/api/{path}" if path else "/api/"
-    
     # Normalize: ensure trailing slash for consistent counting
     if not url_path.endswith('/'):
         url_path += '/'
 
+    # Determine namespace based on request source
     source = request.headers.get('X-Request-Source', None)
-    redis_client.increment_url_count(url_path, source if source else NAMESPACE)
+    namespace = source if source else NAMESPACE
+    is_test_request = source == NAMESPACE_TEST
     
-    # Return a simple response (simulating an API endpoint)
+    # Attempt to count request - Redis client handles all error cases
+    try:
+        redis_client.increment_url_count(url_path, namespace)
+    except RedisOperationError:
+        # For test requests, fail if Redis counting failed
+        if is_test_request:
+            return jsonify({"error": "Redis counting failed during test"}), 500
+        # For real requests, continue normally even if counting failed
+    
     return '', 200
 
 @app.route('/test/<int:num_requests>/', methods=['POST'])
