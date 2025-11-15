@@ -5,6 +5,7 @@ from flask import Flask, jsonify, request
 
 from .request_client import RequestClient
 from .redis_client import RedisClient, RedisOperationError, NAMESPACE, NAMESPACE_TEST
+from .validation import validate_api_path, validate_pagination_params, validate_test_request_count
 
 app = Flask(__name__)
 redis_client = RedisClient()
@@ -13,9 +14,13 @@ redis_client = RedisClient()
 @app.route('/api/<path:path>')
 def api_endpoints(path):
     """
-    Handle all GET requests to /api/* paths.
+    Handle all GET requests to /api/* paths with input validation.
     This simulates real API endpoints with resilient Redis counting.
     """
+    # Validate input path
+    is_valid, error_msg = validate_api_path(path)
+    if not is_valid:
+        return jsonify({"error": f"Invalid path: {error_msg}"}), 400
     # Construct the full URL path
     url_path = f"/api/{path}" if path else "/api/"
     # Normalize: ensure trailing slash for consistent counting
@@ -45,8 +50,9 @@ def test_endpoint(num_requests):
     Stores test metadata in Redis for stats endpoint.
     """
     # Input validation
-    if num_requests <= 0:
-        return jsonify({"error": "Number of requests must be positive"}), 400
+    is_valid, error_msg = validate_test_request_count(num_requests)
+    if not is_valid:
+        return jsonify({"error": error_msg}), 400
 
     # Clear previous test data (including metadata)
     redis_client.clear_namespace(NAMESPACE_TEST)
@@ -86,14 +92,9 @@ def get_stats():
         page_size = request.args.get('page_size', 25, type=int)
         
         # Validate parameters
-        if page < 0:
-            return jsonify({"error": "Page number must be non-negative"}), 400
-            
-        if page_size < 1:
-            return jsonify({"error": "Page size must be positive"}), 400
-            
-        if page_size > 1000:
-            return jsonify({"error": "Page size cannot exceed 1000"}), 400
+        is_valid, error_msg = validate_pagination_params(page, page_size)
+        if not is_valid:
+            return jsonify({"error": error_msg}), 400
         
         # Get combined statistics with metadata
         result = redis_client.get_url_stats(

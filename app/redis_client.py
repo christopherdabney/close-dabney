@@ -81,13 +81,52 @@ class RedisClient:
             print(f"Error: Unexpected error getting metadata: {e}")
             raise
     
+    def _scan_namespace_keys(self, namespace):
+        """
+        Use SCAN to iterate through keys matching namespace pattern.
+        Non-blocking alternative to KEYS that doesn't freeze Redis.
+        
+        Args:
+            namespace: Redis namespace to scan
+            
+        Returns:
+            list: All keys matching the namespace pattern
+        """
+        pattern = f"{namespace}:*"
+        keys = []
+        cursor = 0
+        
+        try:
+            while True:
+                # SCAN returns (next_cursor, key_batch)
+                # count=100 processes 100 keys per iteration (adjustable)
+                cursor, batch = self.client.scan(
+                    cursor=cursor, 
+                    match=pattern, 
+                    count=100
+                )
+                keys.extend(batch)
+                
+                # cursor=0 means we've scanned all keys
+                if cursor == 0:
+                    break
+                    
+            return keys
+            
+        except (redis.ConnectionError, redis.TimeoutError, redis.RedisError) as e:
+            print(f"Warning: Redis SCAN operation failed for namespace {namespace}: {e}")
+            raise RedisOperationError(f"Failed to scan namespace {namespace}: {e}")
+        except Exception as e:
+            print(f"Error: Unexpected error scanning namespace {namespace}: {e}")
+            raise
+    
     def clear_namespace(self, namespace=NAMESPACE):
         """
-        Delete all keys in the specified namespace.
+        Delete all keys in the specified namespace using SCAN.
         Returns count of deleted keys, raises RedisOperationError on failure.
         """
         try:
-            keys = self.client.keys(f"{namespace}:*")
+            keys = self._scan_namespace_keys(namespace)
             if keys:
                 return self.client.delete(*keys)
             return 0
@@ -131,8 +170,8 @@ class RedisClient:
             }
         """
         try:
-            # Get all keys matching our URL pattern (exclude metadata key)
-            all_keys = self.client.keys(f"{namespace}:*")
+            # Use SCAN to get all keys matching our URL pattern (exclude metadata key)
+            all_keys = self._scan_namespace_keys(namespace)
             metadata_key = f"{namespace}:{METADATA_KEY}"
             url_keys = [key for key in all_keys if key != metadata_key]
             
