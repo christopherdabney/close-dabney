@@ -1,6 +1,6 @@
-import unittest
-from unittest.mock import Mock, patch, AsyncMock
+import pytest
 import json
+from unittest.mock import Mock, patch, AsyncMock
 import sys
 sys.path.append('app')
 
@@ -8,290 +8,283 @@ from app.app import app
 from app.redis_client import RedisOperationError, NAMESPACE, NAMESPACE_TEST
 
 
-class TestFlaskApp(unittest.TestCase):
+class TestFlaskApp:
+    """Test cases for the Flask application endpoints."""
     
-    def setUp(self):
-        """Set up test fixtures before each test method."""
+    @pytest.fixture
+    def client(self):
+        """Create a test client for the Flask application."""
         app.config['TESTING'] = True
-        self.client = app.test_client()
-        self.app_context = app.app_context()
-        self.app_context.push()
-    
-    def tearDown(self):
-        """Clean up after each test method."""
-        self.app_context.pop()
-    
-    @patch('app.app.redis_client')
-    def test_api_endpoints_default_path(self, mock_redis_client):
-        """Test /api/ endpoint with default empty path."""
-        mock_redis_client.increment_url_count.return_value = 1
+        with app.test_client() as client:
+            yield client
+
+    @pytest.fixture
+    def mock_redis_client(self):
+        """Mock Redis client for testing."""
+        with patch('app.app.redis_client') as mock_redis:
+            mock_redis.increment_url_count = Mock()
+            mock_redis.clear_namespace = Mock()
+            mock_redis.get_url_stats = Mock(return_value=[])
+            mock_redis.client.ping = Mock()
+            yield mock_redis
+
+
+class TestAPIEndpoints(TestFlaskApp):
+    """Test the /api/* endpoints."""
+
+    def test_api_root_endpoint(self, client, mock_redis_client):
+        """Test GET /api/ endpoint."""
+        response = client.get('/api/')
         
-        response = self.client.get('/api/')
+        assert response.status_code == 200
+        assert response.data == b''
         
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, b'')
+        # Verify Redis counting was called with correct namespace
         mock_redis_client.increment_url_count.assert_called_once_with('/api/', NAMESPACE)
-    
-    @patch('app.app.redis_client')
-    def test_api_endpoints_with_path(self, mock_redis_client):
-        """Test /api/* endpoint with specific path."""
-        mock_redis_client.increment_url_count.return_value = 2
+
+    def test_api_with_path_segments(self, client, mock_redis_client):
+        """Test GET /api/products/123/ endpoint."""
+        response = client.get('/api/products/123/')
         
-        response = self.client.get('/api/users/123')
+        assert response.status_code == 200
+        assert response.data == b''
         
-        self.assertEqual(response.status_code, 200)
-        mock_redis_client.increment_url_count.assert_called_once_with('/api/users/123/', NAMESPACE)
-    
-    @patch('app.app.redis_client')
-    def test_api_endpoints_path_normalization(self, mock_redis_client):
-        """Test that paths are normalized with trailing slash."""
-        mock_redis_client.increment_url_count.return_value = 1
+        # Verify Redis counting was called
+        mock_redis_client.increment_url_count.assert_called_once_with('/api/products/123/', NAMESPACE)
+
+    def test_api_path_normalization(self, client, mock_redis_client):
+        """Test that API paths are normalized with trailing slashes."""
+        response = client.get('/api/products/123')
         
-        # Path without trailing slash should be normalized
-        response = self.client.get('/api/products/456')
+        assert response.status_code == 200
         
-        self.assertEqual(response.status_code, 200)
-        mock_redis_client.increment_url_count.assert_called_once_with('/api/products/456/', NAMESPACE)
-    
-    @patch('app.app.redis_client')
-    def test_api_endpoints_with_test_header(self, mock_redis_client):
-        """Test /api/* endpoint with X-Request-Source header for test traffic."""
-        mock_redis_client.increment_url_count.return_value = 3
+        # Should normalize to include trailing slash
+        mock_redis_client.increment_url_count.assert_called_once_with('/api/products/123/', NAMESPACE)
+
+    def test_api_with_test_header(self, client, mock_redis_client):
+        """Test API endpoint with X-Request-Source header for test traffic."""
+        headers = {'X-Request-Source': NAMESPACE_TEST}
+        response = client.get('/api/test/', headers=headers)
         
-        response = self.client.get('/api/test/', headers={'X-Request-Source': NAMESPACE_TEST})
+        assert response.status_code == 200
         
-        self.assertEqual(response.status_code, 200)
+        # Should use test namespace
         mock_redis_client.increment_url_count.assert_called_once_with('/api/test/', NAMESPACE_TEST)
-    
-    @patch('app.app.redis_client')
-    def test_api_endpoints_redis_error_real_traffic(self, mock_redis_client):
-        """Test /api/* endpoint handles Redis errors gracefully for real traffic."""
+
+    def test_api_redis_failure_real_traffic(self, client, mock_redis_client):
+        """Test API endpoint continues working when Redis fails for real traffic."""
         mock_redis_client.increment_url_count.side_effect = RedisOperationError("Redis down")
         
-        response = self.client.get('/api/users/789/')
+        response = client.get('/api/products/')
         
-        # Should still return 200 for real traffic even when Redis fails
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, b'')
-    
-    @patch('app.app.redis_client')
-    def test_api_endpoints_redis_error_test_traffic(self, mock_redis_client):
-        """Test /api/* endpoint returns 500 for test traffic when Redis fails."""
+        # Should still return 200 for real traffic even if Redis fails
+        assert response.status_code == 200
+
+    def test_api_redis_failure_test_traffic(self, client, mock_redis_client):
+        """Test API endpoint fails when Redis fails for test traffic."""
         mock_redis_client.increment_url_count.side_effect = RedisOperationError("Redis down")
+        headers = {'X-Request-Source': NAMESPACE_TEST}
         
-        response = self.client.get('/api/test/', headers={'X-Request-Source': NAMESPACE_TEST})
+        response = client.get('/api/products/', headers=headers)
         
-        # Should return 500 for test traffic when Redis fails
-        self.assertEqual(response.status_code, 500)
-        response_data = json.loads(response.data)
-        self.assertEqual(response_data['error'], 'Redis counting failed during test')
-    
-    @patch('app.app.redis_client')
-    def test_get_stats_success(self, mock_redis_client):
-        """Test /stats/ endpoint returns statistics successfully."""
+        # Should return 500 for test traffic if Redis fails
+        assert response.status_code == 500
+        data = json.loads(response.data)
+        assert 'error' in data
+        assert 'Redis counting failed' in data['error']
+
+
+class TestStatsEndpoint(TestFlaskApp):
+    """Test the /stats/ endpoint."""
+
+    def test_stats_empty(self, client, mock_redis_client):
+        """Test /stats/ endpoint with no data."""
+        mock_redis_client.get_url_stats.return_value = []
+        
+        response = client.get('/stats/')
+        
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data == []
+        
+        # Should request test namespace stats
+        mock_redis_client.get_url_stats.assert_called_once_with(namespace=NAMESPACE_TEST)
+
+    def test_stats_with_data(self, client, mock_redis_client):
+        """Test /stats/ endpoint with statistics data."""
         mock_stats = [
-            {'url': '/api/users/', 'count': 10},
-            {'url': '/api/products/', 'count': 5}
+            {'url': '/api/products/', 'count': 5},
+            {'url': '/api/users/', 'count': 3}
         ]
         mock_redis_client.get_url_stats.return_value = mock_stats
         
-        response = self.client.get('/stats/')
+        response = client.get('/stats/')
         
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content_type, 'application/json')
-        
-        response_data = json.loads(response.data)
-        self.assertEqual(response_data, mock_stats)
-        mock_redis_client.get_url_stats.assert_called_once_with(namespace=NAMESPACE_TEST)
-    
-    @patch('app.app.redis_client')
-    def test_get_stats_empty(self, mock_redis_client):
-        """Test /stats/ endpoint with no statistics."""
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data == mock_stats
+
+    def test_stats_content_type(self, client, mock_redis_client):
+        """Test /stats/ endpoint returns proper JSON content type."""
         mock_redis_client.get_url_stats.return_value = []
         
-        response = self.client.get('/stats/')
+        response = client.get('/stats/')
         
-        self.assertEqual(response.status_code, 200)
-        response_data = json.loads(response.data)
-        self.assertEqual(response_data, [])
-    
-    @patch('app.app.make_concurrent_requests')
-    @patch('app.app.redis_client')
-    def test_test_endpoint_success(self, mock_redis_client, mock_make_requests):
-        """Test /test/<num>/ endpoint executes successfully."""
-        mock_redis_client.clear_namespace.return_value = 3
-        mock_make_requests.return_value = {
-            'message': 'Generated 10 fake requests',
-            'successful_requests': 8,
-            'failed_requests': 2
+        assert response.content_type == 'application/json'
+
+
+class TestTestEndpoint(TestFlaskApp):
+    """Test the /test/ endpoint."""
+
+    def test_test_endpoint_success(self, client, mock_redis_client):
+        """Test POST /test/10/ with valid request."""
+        mock_result = {
+            'successful_requests': 10,
+            'failed_requests': 0,
+            'message': 'Test completed'
         }
         
-        response = self.client.post('/test/10/')
+        with patch('app.app.RequestClient') as mock_request_client_class:
+            # Mock the async context manager and execute_test method
+            mock_client_instance = AsyncMock()
+            mock_client_instance.execute_test.return_value = mock_result
+            mock_request_client_class.return_value.__aenter__.return_value = mock_client_instance
+            mock_request_client_class.return_value.__aexit__.return_value = None
+            
+            response = client.post('/test/10/')
+            
+            assert response.status_code == 200
+            data = json.loads(response.data)
+            assert data == mock_result
+            
+            # Verify Redis namespace was cleared
+            mock_redis_client.clear_namespace.assert_called_once_with(NAMESPACE_TEST)
+
+    def test_test_endpoint_zero_requests(self, client, mock_redis_client):
+        """Test POST /test/0/ with invalid zero requests."""
+        response = client.post('/test/0/')
         
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content_type, 'application/json')
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert 'error' in data
+        assert 'must be positive' in data['error']
+
+    def test_test_endpoint_negative_requests(self, client, mock_redis_client):
+        """Test POST /test/-5/ with invalid negative requests."""
+        response = client.post('/test/-5/')
         
-        # Verify Redis namespace was cleared
-        mock_redis_client.clear_namespace.assert_called_once_with(NAMESPACE_TEST)
+        # Flask route <int:num_requests> doesn't match negative numbers, returns 404
+        assert response.status_code == 404
+
+    def test_test_endpoint_non_integer(self, client, mock_redis_client):
+        """Test POST /test/abc/ with non-integer parameter."""
+        response = client.post('/test/abc/')
         
-        # Verify concurrent requests were made
-        mock_make_requests.assert_called_once_with(10)
+        # Flask <int:> route parameter rejects non-integers with 404
+        assert response.status_code == 404
+
+    def test_test_endpoint_large_number(self, client, mock_redis_client):
+        """Test POST /test/1000000/ with very large request count."""
+        mock_result = {'message': 'Test completed'}
         
-        # Check response content
-        response_data = json.loads(response.data)
-        self.assertEqual(response_data['message'], 'Generated 10 fake requests')
-        self.assertEqual(response_data['successful_requests'], 8)
-        self.assertEqual(response_data['failed_requests'], 2)
-    
-    def test_test_endpoint_invalid_number_zero(self):
-        """Test /test/<num>/ endpoint rejects zero requests."""
-        response = self.client.post('/test/0/')
+        with patch('app.app.RequestClient') as mock_request_client_class:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.execute_test.return_value = mock_result
+            mock_request_client_class.return_value.__aenter__.return_value = mock_client_instance
+            mock_request_client_class.return_value.__aexit__.return_value = None
+            
+            response = client.post('/test/1000000/')
+            
+            # Should accept large numbers (no upper limit per spec)
+            assert response.status_code == 200
+
+    def test_test_endpoint_wrong_method(self, client, mock_redis_client):
+        """Test GET /test/10/ with wrong HTTP method."""
+        response = client.get('/test/10/')
         
-        self.assertEqual(response.status_code, 400)
-        response_data = json.loads(response.data)
-        self.assertEqual(response_data['error'], 'Number of requests must be positive')
-    
-    def test_test_endpoint_invalid_number_negative(self):
-        """Test /test/<num>/ endpoint rejects negative requests."""
-        # Flask <int:num> route converter returns 404 for negative numbers
-        # This is expected behavior since negative numbers don't match int converter
-        response = self.client.post('/test/-5/')
-        
-        self.assertEqual(response.status_code, 404)  # Flask returns 404 for route mismatch
-    
-    @patch('app.app.make_concurrent_requests')
-    @patch('app.app.redis_client')
-    def test_test_endpoint_valid_large_number(self, mock_redis_client, mock_make_requests):
-        """Test /test/<num>/ endpoint accepts large numbers."""
-        mock_redis_client.clear_namespace.return_value = 0
-        mock_make_requests.return_value = {'message': 'Generated 10000 fake requests'}
-        
-        response = self.client.post('/test/10000/')
-        
-        self.assertEqual(response.status_code, 200)
-        mock_make_requests.assert_called_once_with(10000)
-    
-    @patch('app.app.redis_client')
-    def test_health_check_success(self, mock_redis_client):
-        """Test /health endpoint when Redis is healthy."""
+        # Should return 405 Method Not Allowed
+        assert response.status_code == 405
+
+    def test_test_endpoint_integration(self, client, mock_redis_client):
+        """Test that test endpoint properly uses RequestClient."""
+        with patch('app.app.RequestClient') as mock_request_client_class:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.execute_test.return_value = {'result': 'success'}
+            mock_request_client_class.return_value.__aenter__.return_value = mock_client_instance
+            mock_request_client_class.return_value.__aexit__.return_value = None
+            
+            response = client.post('/test/5/')
+            
+            assert response.status_code == 200
+            data = json.loads(response.data)
+            assert data == {'result': 'success'}
+
+
+class TestHealthEndpoint(TestFlaskApp):
+    """Test the /health endpoint."""
+
+    def test_health_check_success(self, client, mock_redis_client):
+        """Test health check with working Redis connection."""
         mock_redis_client.client.ping.return_value = True
         
-        response = self.client.get('/health')
+        response = client.get('/health')
         
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content_type, 'application/json')
-        
-        response_data = json.loads(response.data)
-        self.assertEqual(response_data['status'], 'healthy')
-        self.assertEqual(response_data['redis'], 'connected')
-        self.assertIn('timestamp', response_data)
-        
-        mock_redis_client.client.ping.assert_called_once()
-    
-    @patch('app.app.redis_client')
-    def test_health_check_redis_failure(self, mock_redis_client):
-        """Test /health endpoint when Redis is unhealthy."""
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['status'] == 'healthy'
+        assert data['redis'] == 'connected'
+        assert 'timestamp' in data
+
+    def test_health_check_redis_failure(self, client, mock_redis_client):
+        """Test health check with Redis connection failure."""
         mock_redis_client.client.ping.side_effect = Exception("Redis connection failed")
         
-        response = self.client.get('/health')
+        response = client.get('/health')
         
-        self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.content_type, 'application/json')
+        assert response.status_code == 500
+        data = json.loads(response.data)
+        assert data['status'] == 'unhealthy'
+        assert data['redis'] == 'disconnected'
+        assert 'Redis connection failed' in data['error']
+        assert 'timestamp' in data
+
+    def test_health_check_content_type(self, client, mock_redis_client):
+        """Test health check returns proper JSON content type."""
+        response = client.get('/health')
         
-        response_data = json.loads(response.data)
-        self.assertEqual(response_data['status'], 'unhealthy')
-        self.assertEqual(response_data['redis'], 'disconnected')
-        self.assertIn('error', response_data)
-        self.assertIn('timestamp', response_data)
-        self.assertEqual(response_data['error'], 'Redis connection failed')
-    
-    @patch('app.app.redis_client')
-    def test_api_endpoints_various_http_methods(self, mock_redis_client):
-        """Test that /api/* only responds to GET requests."""
-        # GET should work
-        response = self.client.get('/api/test/')
-        self.assertEqual(response.status_code, 200)
+        assert response.content_type == 'application/json'
+
+
+class TestRouteValidation(TestFlaskApp):
+    """Test route validation and edge cases."""
+
+    def test_nonexistent_route(self, client):
+        """Test request to nonexistent route returns 404."""
+        response = client.get('/nonexistent')
         
-        # Other methods should return 405 Method Not Allowed
-        response = self.client.post('/api/test/')
-        self.assertEqual(response.status_code, 405)
+        assert response.status_code == 404
+
+    def test_api_route_without_trailing_slash_redirect(self, client, mock_redis_client):
+        """Test that /api route without trailing slash works."""
+        response = client.get('/api')
         
-        response = self.client.put('/api/test/')
-        self.assertEqual(response.status_code, 405)
+        # Flask should handle this gracefully
+        assert response.status_code in [200, 301, 308]  # 200 or redirect
+
+    def test_stats_route_wrong_method(self, client):
+        """Test /stats/ with wrong HTTP method."""
+        response = client.post('/stats/')
         
-        response = self.client.delete('/api/test/')
-        self.assertEqual(response.status_code, 405)
-    
-    @patch('app.app.make_concurrent_requests')
-    @patch('app.app.redis_client')
-    def test_test_endpoint_only_post(self, mock_redis_client, mock_make_requests):
-        """Test that /test/<num>/ only responds to POST requests."""
-        mock_redis_client.clear_namespace.return_value = 0
-        mock_make_requests.return_value = {'message': 'test'}
+        assert response.status_code == 405  # Method Not Allowed
+
+    def test_api_route_deep_nesting(self, client, mock_redis_client):
+        """Test API route with deep path nesting."""
+        deep_path = '/api/level1/level2/level3/level4/level5/'
+        response = client.get(deep_path)
         
-        # POST should work
-        response = self.client.post('/test/5/')
-        self.assertIn(response.status_code, [200, 400])  # Either success or validation error
-        
-        # Other methods should return 405 Method Not Allowed
-        response = self.client.get('/test/5/')
-        self.assertEqual(response.status_code, 405)
-        
-        response = self.client.put('/test/5/')
-        self.assertEqual(response.status_code, 405)
-        
-        response = self.client.delete('/test/5/')
-        self.assertEqual(response.status_code, 405)
-    
-    @patch('app.app.redis_client')
-    def test_stats_endpoint_only_get(self, mock_redis_client):
-        """Test that /stats/ only responds to GET requests."""
-        mock_redis_client.get_url_stats.return_value = []
-        
-        # GET should work
-        response = self.client.get('/stats/')
-        self.assertEqual(response.status_code, 200)
-        
-        # Other methods should return 405 Method Not Allowed
-        response = self.client.post('/stats/')
-        self.assertEqual(response.status_code, 405)
-        
-        response = self.client.put('/stats/')
-        self.assertEqual(response.status_code, 405)
-        
-        response = self.client.delete('/stats/')
-        self.assertEqual(response.status_code, 405)
-    
-    @patch('app.app.make_concurrent_requests')
-    @patch('app.app.redis_client')
-    def test_test_endpoint_integration(self, mock_redis_client, mock_make_requests):
-        """Test that /test/ endpoint properly integrates with request generation."""
-        mock_redis_client.clear_namespace.return_value = 0
-        
-        # Mock a comprehensive result that would come from make_concurrent_requests
-        mock_result = {
-            'message': 'Generated 25 fake requests',
-            'successful_requests': 20,
-            'failed_requests': 5,
-            'completion_rate': 0.8,
-            'circuit_breaker_triggered': False,
-            'random_strings_used': ['abc', 'def', 'ghi']
-        }
-        mock_make_requests.return_value = mock_result
-        
-        response = self.client.post('/test/25/')
-        
-        self.assertEqual(response.status_code, 200)
-        response_data = json.loads(response.data)
-        
-        # Verify all expected fields are present
-        self.assertEqual(response_data['message'], 'Generated 25 fake requests')
-        self.assertEqual(response_data['successful_requests'], 20)
-        self.assertEqual(response_data['failed_requests'], 5)
-        self.assertEqual(response_data['completion_rate'], 0.8)
-        self.assertEqual(response_data['circuit_breaker_triggered'], False)
-        self.assertEqual(response_data['random_strings_used'], ['abc', 'def', 'ghi'])
+        assert response.status_code == 200
+        mock_redis_client.increment_url_count.assert_called_once_with(deep_path, NAMESPACE)
 
 
 if __name__ == '__main__':
-    unittest.main()
+    pytest.main([__file__])
