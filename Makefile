@@ -39,9 +39,16 @@ test:
 	curl -X POST http://localhost:5000/test/$$NUM/
 
 # Display current statistics
-stats:
+stats-all:
 	@echo "Current request statistics:"; \
 	curl -s http://localhost:5000/stats/ | python3 -m json.tool || echo "Error: Make sure server is running (make start)"
+
+# Display specific page of statistics (use: make stats-page PAGE=2 SIZE=10)
+stats:
+	@PAGE=$${PAGE:-0}; \
+	SIZE=$${SIZE:-25}; \
+	echo "Request statistics (page $$PAGE, $$SIZE results per page):"; \
+	curl -s "http://localhost:5000/stats/?page=$$PAGE&page_size=$$SIZE" | python3 -m json.tool || echo "Error: Make sure server is running (make start)"
 
 # Run unit tests
 unit-test:

@@ -62,11 +62,50 @@ def test_endpoint(num_requests):
 @app.route('/stats/')
 def get_stats():
     """
-    Return JSON report of URL request statistics.
+    Return paginated JSON report of URL request statistics.
     Ordered from most requested to least requested.
+    
+    Query Parameters:
+        page (int): Page number, 0-based (default: 0)
+        page_size (int): Results per page (default: 25, max: 1000)
+        
+    Returns:
+        JSON with url_stats array and pagination metadata
     """
-    stats = redis_client.get_url_stats(namespace=NAMESPACE_TEST)
-    return jsonify(stats)
+    try:
+        # Parse query parameters
+        page = request.args.get('page', 0, type=int)
+        page_size = request.args.get('page_size', 25, type=int)
+        
+        # Validate parameters
+        if page < 0:
+            return jsonify({"error": "Page number must be non-negative"}), 400
+            
+        if page_size < 1:
+            return jsonify({"error": "Page size must be positive"}), 400
+            
+        if page_size > 1000:
+            return jsonify({"error": "Page size cannot exceed 1000"}), 400
+        
+        # Get paginated statistics
+        result = redis_client.get_url_stats(
+            namespace=NAMESPACE_TEST, 
+            page=page, 
+            page_size=page_size
+        )
+        
+        return jsonify(result)
+        
+    except RedisOperationError as e:
+        return jsonify({
+            "error": "Failed to retrieve statistics",
+            "details": str(e)
+        }), 500
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "details": str(e)
+        }), 500
 
 @app.route('/health')
 def health_check():
