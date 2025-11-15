@@ -34,9 +34,9 @@ logs:
 
 # Run synthetic traffic test (use: make test NUM=50)
 test:
-	@NUM=${NUM:-10}; \
-	echo "Running test with $NUM requests..."; \
-	curl -X POST http://localhost:5000/test/$NUM/ || echo "Error: Make sure server is running (make start)"
+	@NUM=$${NUM:-10}; \
+	echo "Running test with $$NUM requests..."; \
+	curl -X POST http://localhost:5000/test/$$NUM/
 
 # Display current statistics
 stats:
@@ -61,3 +61,12 @@ test-coverage:
 # Show clean project structure
 tree:
 	tree -I 'node_modules|venv|__pycache__|*.pyc|*.db'
+
+# Nuclear reset - stop everything, clean all artifacts, rebuild from scratch
+reset:
+	@echo "🚨 Nuclear reset: stopping containers, cleaning artifacts, rebuilding..."
+	$(MAKE) stop || true
+	$(MAKE) clean || true
+	$(MAKE) build || true
+	$(MAKE) start
+	@echo "✅ Reset complete - system rebuilt and started"

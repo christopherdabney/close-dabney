@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime
 from flask import Flask, jsonify, request
 
-from .request_client import make_concurrent_requests
+from .request_client import RequestClient
 from .redis_client import RedisClient, RedisOperationError, NAMESPACE, NAMESPACE_TEST
 
 app = Flask(__name__)
@@ -50,8 +50,12 @@ def test_endpoint(num_requests):
     # Clear previous test data
     redis_client.clear_namespace(NAMESPACE_TEST)
 
-    # Run async work synchronously
-    results = asyncio.run(make_concurrent_requests(num_requests))
+    # Run async work using RequestClient class
+    async def run_test():
+        async with RequestClient() as client:
+            return await client.execute_test(num_requests)
+    
+    results = asyncio.run(run_test())
     
     return jsonify(results)
 
