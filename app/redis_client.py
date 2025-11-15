@@ -1,8 +1,10 @@
 import redis
 import os
+import json
 
 NAMESPACE = "url_count"
 NAMESPACE_TEST = "test"
+METADATA_KEY = "test_metadata"
 
 class RedisOperationError(Exception):
     """Raised when any Redis operation fails."""
@@ -36,6 +38,49 @@ class RedisClient:
             print(f"Error: Unexpected error counting request for {url_path}: {e}")
             raise
     
+    def store_test_metadata(self, metadata, namespace=NAMESPACE_TEST):
+        """
+        Store test execution metadata in Redis.
+        
+        Args:
+            metadata: Dict containing test execution results
+            namespace: Redis namespace for the metadata
+        """
+        key = f"{namespace}:{METADATA_KEY}"
+        
+        try:
+            return self.client.set(key, json.dumps(metadata))
+        except (redis.ConnectionError, redis.TimeoutError, redis.RedisError) as e:
+            print(f"Warning: Redis operation failed storing metadata: {e}")
+            raise RedisOperationError(f"Failed to store test metadata: {e}")
+        except Exception as e:
+            print(f"Error: Unexpected error storing metadata: {e}")
+            raise
+    
+    def get_test_metadata(self, namespace=NAMESPACE_TEST):
+        """
+        Retrieve test execution metadata from Redis.
+        
+        Args:
+            namespace: Redis namespace to query
+            
+        Returns:
+            dict: Test metadata or empty dict if not found
+        """
+        key = f"{namespace}:{METADATA_KEY}"
+        
+        try:
+            metadata_json = self.client.get(key)
+            if metadata_json:
+                return json.loads(metadata_json)
+            return {}
+        except (redis.ConnectionError, redis.TimeoutError, redis.RedisError) as e:
+            print(f"Warning: Redis operation failed getting metadata: {e}")
+            raise RedisOperationError(f"Failed to get test metadata: {e}")
+        except Exception as e:
+            print(f"Error: Unexpected error getting metadata: {e}")
+            raise
+    
     def clear_namespace(self, namespace=NAMESPACE):
         """
         Delete all keys in the specified namespace.
@@ -55,7 +100,7 @@ class RedisClient:
 
     def get_url_stats(self, namespace=NAMESPACE, page=0, page_size=25):
         """
-        Get paginated URL request statistics ordered from most to least requested.
+        Get paginated URL request statistics with test metadata.
         
         Args:
             namespace: Redis namespace to query
@@ -64,7 +109,7 @@ class RedisClient:
             
         Returns:
             dict: {
-                'url_stats': [{'url': str, 'count': int}, ...],
+                'stats': [{'url': str, 'count': int}, ...],
                 'pagination': {
                     'page': int,
                     'page_size': int, 
@@ -74,16 +119,26 @@ class RedisClient:
                     'has_next': bool,
                     'prev_page': int|None,
                     'next_page': int|None
+                },
+                'metadata': {
+                    'successful_requests': int,
+                    'failed_requests': int,
+                    'completion_rate': float,
+                    'circuit_breaker_triggered': bool,
+                    'random_strings_used': list,
+                    ...
                 }
             }
         """
         try:
-            # Get all keys matching our pattern
-            keys = self.client.keys(f"{namespace}:*")
+            # Get all keys matching our URL pattern (exclude metadata key)
+            all_keys = self.client.keys(f"{namespace}:*")
+            metadata_key = f"{namespace}:{METADATA_KEY}"
+            url_keys = [key for key in all_keys if key != metadata_key]
             
             # Build complete stats list
             all_stats = []
-            for key in keys:
+            for key in url_keys:
                 # Extract URL path from key (remove namespace prefix)
                 url_path = key[len(namespace) + 1:]  # +1 for the colon
                 count = int(self.client.get(key))
@@ -121,9 +176,13 @@ class RedisClient:
                 'next_page': page + 1 if page < total_pages - 1 else None
             }
             
+            # Get test metadata
+            metadata = self.get_test_metadata(namespace)
+            
             return {
-                'url_stats': page_stats,
-                'pagination': pagination
+                'stats': page_stats,
+                'pagination': pagination,
+                'metadata': metadata
             }
             
         except (redis.ConnectionError, redis.TimeoutError, redis.RedisError) as e:

@@ -42,12 +42,13 @@ def api_endpoints(path):
 def test_endpoint(num_requests):
     """
     Generate fake requests to test the system.
+    Stores test metadata in Redis for stats endpoint.
     """
     # Input validation
     if num_requests <= 0:
         return jsonify({"error": "Number of requests must be positive"}), 400
 
-    # Clear previous test data
+    # Clear previous test data (including metadata)
     redis_client.clear_namespace(NAMESPACE_TEST)
 
     # Run async work using RequestClient class
@@ -57,12 +58,19 @@ def test_endpoint(num_requests):
     
     results = asyncio.run(run_test())
     
+    # Store test metadata in Redis for stats endpoint
+    try:
+        redis_client.store_test_metadata(results, NAMESPACE_TEST)
+    except RedisOperationError as e:
+        print(f"Warning: Failed to store test metadata: {e}")
+        # Continue anyway - test completed successfully
+    
     return jsonify(results)
 
 @app.route('/stats/')
 def get_stats():
     """
-    Return paginated JSON report of URL request statistics.
+    Return combined JSON with stats, pagination, and test metadata.
     Ordered from most requested to least requested.
     
     Query Parameters:
@@ -70,7 +78,7 @@ def get_stats():
         page_size (int): Results per page (default: 25, max: 1000)
         
     Returns:
-        JSON with url_stats array and pagination metadata
+        JSON with stats, pagination, and metadata keys
     """
     try:
         # Parse query parameters
@@ -87,7 +95,7 @@ def get_stats():
         if page_size > 1000:
             return jsonify({"error": "Page size cannot exceed 1000"}), 400
         
-        # Get paginated statistics
+        # Get combined statistics with metadata
         result = redis_client.get_url_stats(
             namespace=NAMESPACE_TEST, 
             page=page, 
